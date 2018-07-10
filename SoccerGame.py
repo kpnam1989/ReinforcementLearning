@@ -4,16 +4,12 @@
 Created on Thu Jul  5 16:03:37 2018
 
 @author: nkieu
-TODO:
-    write Friend first, it is the easiest
-    write Foe
-    write CE
 Notes:
     Fig 3: error values reflect player A (right)'s Q's values corresponding to state s
-    with player A taking action S and player B sticking
-    fixed: bot can still be in the same field if 1 Stick and the other one moves
-    note: p2 in Greenwald paper, under MarkovGamme = Q(s, a) = (1-gamma) * reward
+    with player A taking action S and player B sticking - state 120,action 4, 2
     
+    note: p2 in Greenwald paper, under MarkovGamme = Q(s, a) = (1-gamma) * reward
+
 """
 
 import numpy as np
@@ -59,8 +55,7 @@ class Foe_Solver:
         
         # constraint for payoff
         # constrait for probability >> 0
-        h = ([0 for i in range(payoff.shape[1])] + 
-             [0 for i in range(num_vars)])
+        h = [0 for i in range(payoff.shape[1])] + [0 for i in range(num_vars)]
         h = np.array(h, dtype="float")
         h = matrix(h)
         
@@ -92,7 +87,7 @@ class Foe_Solver:
         print("Column player", result)
         
 class CE_Solver:
-    def ce(self, payoff, solver=None):
+    def ce(self, payoff, solver=None, verbose = False):
         self.nrow, self.ncol, _ = payoff.shape
         num_vars = self.nrow * self.ncol
         
@@ -103,6 +98,8 @@ class CE_Solver:
         c = matrix(c)
         c *= -1 # cvxopt minimizes so *-1 to maximize
         
+        if verbose: print(c)
+        
         # constraints G*x <= h
         G = self.build_ce_constraints(A=payoff)
         G = np.vstack([G, np.eye(num_vars) * -1]) # > 0 constraint for all vars
@@ -112,6 +109,7 @@ class CE_Solver:
         h = np.array(h, dtype="float")
         h = matrix(h)
         
+        if verbose: print(G, h)
         # contraints Ax = b
         # Sum to 1
         A = [1 for i in range(num_vars)]
@@ -119,6 +117,9 @@ class CE_Solver:
         A = matrix(A)
         b = np.matrix(1, dtype="float")
         b = matrix(b)
+        
+        if verbose: print(A)
+        
         sol = solvers.lp(c=c, G=G, h=h, A=A, b=b, solver=solver)
         return sol
     
@@ -154,19 +155,19 @@ class CE_Solver:
         
         return np.matrix(G, dtype="float")
     
-    def test(self):
+    def test(self, verbose = False):
         # Correlated Equilibrium
-        A = [[6, 6], [2, 7],[7, 2], [0, 0]]
+        A = [[[6, 6], [2, 7]],[[7, 2], [0, 0]]]
         A = np.array(A)
-        sol = self.ce(A)
+        sol = self.ce(A, verbose)
         print(sol['x'])
     
-    def test_2(self):
+    def test_2(self, verbose = False):
         # Correlated Equilibrium
         payoff = [[[6, 6], [2, 7],[7, 2]], 
              [[0, 0], [7, 6], [8, 5]]]
         payoff = np.array(payoff)
-        sol = self.ce(payoff)
+        sol = self.ce(payoff, verbose)
         print(sol['x'])
 
 
@@ -186,7 +187,7 @@ class SoccerGame:
     def __init__(self):
         self.nrow = NROW
         self.ncol = NCOL
-        self.players = [Players(name='a'), Players(name='b')]
+        self.players = [Players(name='b'), Players(name='x')]
         self.numPlayers = 2
             
     def getStateID_player(self, player):
@@ -355,19 +356,46 @@ class Qlearning:
             epsilon = 0.05
         return epsilon
     
+    def getValues_NextMove(self, thisState, method = 'FriendQ'):
+        # Get V and next move
+        values, nextMove = [0.0, 0.0], [0, 0]
+        if method == 'FriendQ':
+            values, nextMove = self.selectionFunction_FriendQ(thisState)
+        elif method == 'CorrelatedQ':
+            values, nextMove = self.selectionFunction_CorrelatedQ(thisState)
+        elif method == 'FoeQ':
+            values, nextMove = self.selectionFunction_FoeQ(thisState)
+        elif method == 'Qlearning':
+            values, nextMove = self.selectionFunction_Qlearning(thisState)
+        else:
+            raise ValueError("wrong choice of method")
+        
+        return values, nextMove
+    
+    
     def simulate(self, n = 10, method = 'FriendQ', solver = CE_Solver):
         gamma = 0.9
         rewards = [0, 0]
         
         deltaList = []
+        thisGame = 0
+        countGame = 0
         
-        for thisGame in range(n):
+        while thisGame < n:
             self.game.reset_default()
             if self.verbose: self.game.printState_graph()
             
-            deltaUpdate = 0.0
             currentState = self.game.getStateID()
-            move = self.newAction()
+            countGame += 1    
+            move = [0, 0]
+            epsilon = self.getEpsilon(thisGame)
+            tmp = np.random.binomial(1, epsilon)
+            
+            if tmp == 1:
+                move = self.newAction()
+            else:
+                _, move = self.getValues_NextMove(currentState, method)
+            
             state_prime = None
             done = False
             count = 0
@@ -377,48 +405,30 @@ class Qlearning:
                 count += 1
                 rewards[0], rewards[1], done = self.game.nextState(move)
                 state_prime = self.game.getStateID()
-                if self.verbose: 
-                    print(rewards[0], rewards[1])
-                    self.game.printState_graph()
                 
                 # Update learning rate
-                
                 self.visits[currentState][move[0], move[1]] += 1
                 alpha = max(0.001, 1.0 / self.visits[currentState][move[0], move[1]])
+                                
+                values, nextMove = self.getValues_NextMove(state_prime, method)
                 
-                # Get V and next move
-                values, nextMove = [0.0, 0.0], [0, 0]
-                
-                if method == 'FriendQ':
-                    values, nextMove = self.selectionFunction_FriendQ(state_prime)
-                elif method == 'CorrelatedQ':
-                    values, nextMove = self.selectionFunction_CorrelatedQ(state_prime)
-                elif method == 'FoeQ':
-                    values, nextMove = self.selectionFunction_FoeQ(state_prime)
-                elif method == 'Qlearning':
-                    values, nextMove = self.selectionFunction_Qlearning(state_prime)
-                
-                if self.verbose:
-                    print("before", self.QV[1][currentState])
                 for thisPlayer in range(2):
                     v0 = values[thisPlayer]
                     currentVal = self.QV[thisPlayer][currentState][move[0], move[1]]
                     deltaQ = alpha * (rewards[thisPlayer] + gamma * v0 * (not done) - currentVal)
                     
-                    deltaUpdate = max(deltaUpdate, abs(deltaQ))
+                    if currentState == '120' and move[0] == 4 and move[1] == 2 and thisPlayer == 1:
+                        deltaList.append(abs(deltaQ))
+                        thisGame += 1
+                        
                     self.QV[thisPlayer][currentState][move[0], move[1]] += deltaQ
                 
-                if self.verbose:
-                    print("after", self.QV[1][currentState])
-                    
                 currentState = state_prime                
                 move = nextMove
             
-            deltaList.append(deltaUpdate)
-            
             if self.verbose: print("End game", thisGame)
+        print("Total game", countGame)
         
-        print("Final alpha", alpha)
         return deltaList
     
     def selectionFunction_FriendQ(self, state_prime):
@@ -513,9 +523,9 @@ qlearning = Qlearning(game, verbose = False)
 
 #deltaList = qlearning.simulate(500, method = "FriendQ")
 #deltaList = qlearning.simulate(500, method = "CorrelatedQ")
-deltaList = qlearning.simulate(5, method = "FoeQ")
+#deltaList = qlearning.simulate(100, method = "FriendQ")
 
-plt.plot(deltaList)
+#plt.plot(deltaList)
 
 #game.reset_default()
 #done = False
@@ -527,12 +537,15 @@ plt.plot(deltaList)
 #    if done:
 #        game.printState_graph()
 #        break
+#760 game >> 15 updates
+# 7000 game => 100 updates
         
-#def test():
-#    game.reset_default()
-#    game.printState_graph()
-#    
-#    state = game.getStateID()
-#    qlearning = Qlearning(game)
-#    tmp, action = qlearning.selectionFunction_CorrelatedQ(state)
-#
+def test():
+    game.reset_default()
+    game.printState_graph()
+    
+    state = game.getStateID()
+    print(qlearning.QV[1][state])
+    print(qlearning.QV[1][state][4,2])
+    tmp, action = qlearning.selectionFunction_CorrelatedQ(state)
+
